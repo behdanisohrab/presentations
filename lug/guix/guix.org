@@ -1,0 +1,492 @@
+#+TITLE: GNU Guix
+#+SUBTITLE: The Functional and Declarative Future of System Management
+#+DATE: 2026
+#+OPTIONS: toc:nil num:nil ^:nil
+
+* GNU Guix
+
+  #+ATTR_REVEAL: :width 512px :align right
+  [[./logo.png]]
+
+  /The Functional and Declarative Future of System Management/
+
+* What We Will Cover Today
+
+  - What GNU Guix is and where it came from
+  - Traditional vs. Immutable Linux architectures
+  - Why traditional package managers are fundamentally broken
+  - The functional paradigm applied to software deployment
+  - The GNU Store, hash generation, and Merkle tree integrity
+  - Transactional upgrades and instant rollbacks
+  - Reproducible builds and why they matter for security
+  - Guix substitutes: pre-built binaries from the build farm
+  - Isolated development environments
+  - Guix System: your entire OS in one file
+  - The power of Guile Scheme as a unified language
+
+* What is GNU Guix?
+
+  GNU Guix is two things at once:
+
+  - A *purely functional* package manager that can be installed
+    on top of any existing Linux distribution
+  - A complete *GNU/Linux distribution* called Guix System
+
+  It was started in 2012 by Ludovic Courtes as a project of
+  the GNU Project. It is inspired by the ideas of the Nix
+  package manager but is built entirely on GNU Guile Scheme.
+
+* Traditional vs. Immutable Linux Architectures
+
+  Linux distributions generally follow three main architectural models:
+
+  - *Traditional (Mutable)*: APT (Debian/Ubuntu), DNF (Fedora), Pacman (Arch)
+    - Files placed into shared global directories (=/usr/bin=, =/usr/lib=).
+    - Updates mutate state in place; risk of dependency conflicts and drift.
+
+  - *Image-Based Immutable*: Fedora Silverblue, SteamOS, openSUSE MicroOS
+    - Root filesystem (=/usr=) is read-only.
+    - System updates deploy complete OS images (OSTree / A-B partitions).
+    - Applications run isolated inside containers (Flatpak, Podman).
+
+  - *Declarative & Functional Store*: GNU Guix, NixOS
+    - System built from code definitions into isolated store paths (=/gnu/store=).
+    - Atomic generation switches via symlink profiles; instant rollbacks.
+    - Bit-for-bit reproducible, zero global mutation.
+
+* what is different between Traditional and Immutable distros?
+
+  ┌─────────────────────────────────────────────────────────────┐
+  │                    Linux Architectures                      │
+  └──────────────────────────────┬──────────────────────────────┘
+                                 │
+     ┌───────────────────────────┼───────────────────────────┐
+     │                           │                           │
+     ▼                           ▼                           ▼
+┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+│ Traditional  │         │ Image-Based  │         │ Functional   │
+│ (Debian/Arch)│         │ (Silverblue) │         │ (Guix/NixOS) │
+└──────┬───────┘         └──────┬───────┘         └──────┬───────┘
+       │                        │                        │
+       ▼                        ▼                        ▼
+  Mutates state            Read-only /usr           Read-only store
+  in place (/usr)          Image deployment         (/gnu/store)
+  High risk of             Flatpak/Podman           Symlink profiles
+  breakage                 containers               Instant rollbacks
+
+* The Problem: Mutating Global State
+
+  Traditional tools like APT, DNF, and Pacman all operate
+  by *mutating* the global state of your system.
+
+  When you install a package, files are placed into shared
+  global directories like =/usr/bin= and =/usr/lib=.
+
+  When you upgrade, the old version is *overwritten* in place.
+
+  There is no safe, automatic way to go back.
+
+* The Problem: Dependency Hell
+
+  Two programs may require *different versions* of the same
+  shared library. Traditional package managers cannot satisfy
+  both requirements at the same time.
+
+  If an upgrade fails mid-installation or introduces a
+  critical bug, your system is left in a *broken and
+  unpredictable state*. Rolling back is a manual, painful
+  process that often involves restoring from backups.
+
+* The Functional Paradigm
+
+  GNU Guix applies the concept of *pure functions* from
+  functional programming to software builds.
+
+  A package is the output of a function whose inputs are:
+
+  - Source code
+  - Compiler and build tools
+  - Build scripts
+  - Exact dependency tree
+
+  If the inputs do not change, the output *never changes*.
+
+* The GNU Store
+
+  Every build output is placed into a unique directory inside
+  =/gnu/store=, identified by a *cryptographic hash* of all
+  its inputs.
+
+  #+begin_example
+  /gnu/store/4h2r8ifz...-python-3.11.9/bin/python3
+  /gnu/store/l9wbqm57...-python-3.10.14/bin/python3
+  #+end_example
+
+  Multiple versions of the same software *coexist* without
+  any conflict. Global state mutation is completely eliminated.
+
+* Merkle Tree: The Integrity Backbone
+
+  The store is organized as a *Merkle tree*, a tamper-evident
+  data structure where every node's identifier is a hash of
+  its children.
+
+  #+begin_example
+              hash(A+B)
+              /       \
+         hash(A)     hash(B)
+          |            |
+      /gnu/store/...-gcc   /gnu/store/...-glibc
+          \                /
+      inputs: src,bin     inputs: src,bin
+  #+end_example
+
+  If *any* input changes, its hash changes, which propagates
+  up to the root. This makes accidental corruption and
+  malicious tampering *immediately detectable*.
+
+* How the Hash is Generated
+
+  The hash of a store item is computed from *all* of its
+  build inputs, not just the source code:
+
+  #+begin_example
+  inputs = {
+    source:   hello-1.0.tar.gz     (sha256: 0xabc...)
+    compiler: gcc-13.2.0
+    system:   x86_64-linux
+    deps:     glibc-2.38, libgcc-13
+    script:   gnu-build-system
+    env:      PATH, CC, CFLAGS...
+  }
+
+  store_hash = sha256( canonicalize(inputs) )
+  #+end_example
+
+  The result is a *32-character base32 string*:
+
+  #+begin_example
+  /gnu/store/4h2r8ifzm2q6...-hello-1.0
+               ^^^^^^^^^^^
+               unique hash
+  #+end_example
+
+  Change *anything* --- a flag, a dependency, the compiler ---
+  and the entire hash changes.
+
+* Transactional Upgrades
+
+  Because software is installed into unique, *read-only*
+  directories, Guix does not overwrite old software when
+  you upgrade.
+
+  Instead, it builds the new version, places it in the store,
+  and updates a set of symbolic links called a *profile*.
+
+  This makes every system update an *atomic transaction*.
+  Either the entire update succeeds, or nothing changes.
+
+* Instant Rollbacks
+
+  If you update your system and something breaks, you can
+  *instantly revert* to the previous working state.
+
+  #+begin_example
+  guix upgrade
+
+  guix package --roll-back
+
+  guix package --list-generations
+  #+end_example
+
+  You can roll back at the package level or for the entire
+  operating system. Every generation is preserved and
+  available to switch back to.
+
+* Reproducible Builds
+
+  Guix focuses heavily on *reproducible builds*. Because the
+  build environment is completely isolated and strictly
+  defined, building the exact same package on your local laptop,
+  a remote build server, or a cloud instance
+  will produce the *exact same binary output*, bit for bit.
+
+* Why Reproducibility Matters
+
+  Reproducible builds guarantee that the software you are
+  running is *exactly* what the source code claims to be.
+
+  This prevents malicious code injection during the build
+  process, a class of attack known as a *supply chain attack*.
+
+  #+begin_example
+  guix build --check python
+
+  guix graph python | dot -Tpdf > python-graph.pdf
+  #+end_example
+
+* Guix Substitutes: Pre-built Binaries
+
+  Building from source takes time. Guix solves this with
+  *substitutes* --- pre-built binaries served by the
+  official build farm at =ci.guix.gnu.org=.
+
+  When you install a package, Guix checks if a substitute
+  with the *correct hash* is available:
+
+  - If yes: download the binary, skip local compilation
+  - If no: build the package locally from source
+
+  #+begin_example
+  guix install python    ;; downloads substitute if available
+
+  guix build python      ;; forces local build, no substitute
+  #+end_example
+
+  You can also run your *own substitute server* for
+  air-gapped or organizational networks.
+
+* Isolated Dev Environments: The Old Way
+
+  Developers traditionally rely on a patchwork of tools:
+
+  - *Docker* for containerized environments
+  - *Python virtualenv* for Python isolation
+  - *nvm* for Node.js version management
+  - *rbenv* for Ruby version management
+
+  Each tool works differently, has its own quirks, and
+  only covers one language or ecosystem.
+
+* Isolated Dev Environments: guix shell
+
+  Guix replaces all of these with a *single unified command*:
+
+  #+begin_example
+  guix shell python gcc-toolchain make
+
+  guix shell -m manifest.scm
+
+  guix shell python -- python3 -c "import sys; print(sys.version)"
+  #+end_example
+
+  The environment is completely separated from your host
+  system. Any developer joining your project can replicate
+  your exact setup with a single command.
+
+* guix shell: Manifest Files
+
+  A =manifest.scm= file in your project directory declares
+  exactly which tools and libraries your project needs:
+
+  #+begin_src scheme
+  (specifications->manifest
+    '("python"
+      "python-numpy"
+      "python-matplotlib"
+      "gcc-toolchain"
+      "make"))
+  #+end_src
+
+  Commit this file to your repository and every contributor
+  gets the *exact same* development environment.
+
+* Guix System: Declarative OS
+
+  While Guix the package manager runs on any Linux distro,
+  its true power shines as a standalone operating system
+  called *Guix System*.
+
+  Your entire OS is defined in a *single text file*:
+
+  - Timezone, locale, keyboard layout
+  - User accounts and groups
+  - System services: SSH, networking, display manager
+  - Globally installed packages
+
+* Guix System: Portability
+
+  If you buy a new laptop, you simply copy your configuration
+  file, run the deployment command, and your new machine
+  will be an *identical clone* of your previous setup.
+
+  No more spending hours reinstalling and reconfiguring.
+  Your entire system is *version-controlled* and shareable.
+
+* Guix System: Example Config (1/2)
+
+  #+begin_src scheme
+  (use-modules (gnu))
+  (use-service-modules networking ssh)
+
+  (operating-system
+    (host-name "guix-machine")
+    (timezone "Asia/Tehran")
+    (locale "en_US.utf8")
+
+    (bootloader
+      (bootloader-configuration
+        (bootloader grub-efi-bootloader)
+        (targets '("/boot/efi"))))
+
+    (file-systems
+      (cons (file-system
+              (device (file-system-label "my-root"))
+              (mount-point "/")
+              (type "ext4"))
+            %base-file-systems))
+  #+end_src
+
+* Guix System: Example Config (2/2)
+
+  #+begin_src scheme
+    (users
+      (cons (user-account
+              (name "hacker")
+              (group "users")
+              (supplementary-groups
+                '("wheel" "audio" "video")))
+            %base-user-accounts))
+
+    (packages
+      (append
+        (list (specification->package "emacs")
+              (specification->package "git")
+              (specification->package "firefox"))
+        %base-packages))
+
+    (services
+      (append
+        (list (service openssh-service-type)
+              (service dhcp-client-service-type))
+        %base-services)))
+  #+end_src
+
+* The Power of Guile Scheme
+
+  What separates Guix from its cousin Nix is the language.
+
+  Nix uses a custom, domain-specific language.
+  GNU Guix uses *GNU Guile*, an implementation of Scheme,
+  which is a dialect of *Lisp*.
+
+  There is only *one language* to learn for everything:
+
+  - Package definitions
+  - System configuration
+  - The init system (GNU Shepherd)
+  - Build scripts and deployment automation
+
+* Guile Scheme: Package Definition
+
+  #+begin_src scheme
+  (define-public my-hello
+    (package
+      (name "my-hello")
+      (version "1.0")
+      (source
+        (origin
+          (method url-fetch)
+          (uri "https://example.org/hello-1.0.tar.gz")
+          (sha256 (base32 "0abc..."))))
+      (build-system gnu-build-system)
+      (synopsis "A hello world program")
+      (description
+        "A simple hello world for demonstration.")
+      (home-page "https://example.org")
+      (license license:gpl3+)))
+  #+end_src
+
+* Comparison
+
+  | Feature              | Traditional         | GNU Guix                |
+  |----------------------+---------------------+-------------------------|
+  | Directory Structure  | Global /usr/bin     | Isolated /gnu/store     |
+  | Upgrades             | Mutates state       | Atomic transactions     |
+  | Rollbacks            | Difficult, manual   | Instant, via profiles   |
+  | Configuration        | Scattered in /etc   | Single Scheme file      |
+  | Dependency Conflicts | Common              | Impossible              |
+  | Reproducibility      | Not guaranteed      | Bit-for-bit identical   |
+  | Dev Environments     | Docker, venv, nvm   | One tool: guix shell    |
+
+* Free Software Only
+
+  GNU Guix is endorsed by the *Free Software Foundation*.
+
+  The official Guix repositories contain *only free software*.
+  No proprietary drivers, no non-free firmware, no binary
+  blobs of any kind.
+
+  This is a deliberate philosophical commitment to the
+  *four essential freedoms* of the GNU Project:
+
+  - Freedom to run the program
+  - Freedom to study and modify the source
+  - Freedom to redistribute copies
+  - Freedom to distribute modified versions
+
+* Nonguix: The Community Channel
+
+  In practice, many users need proprietary firmware for
+  WiFi, GPU drivers, or certain applications.
+
+  The community maintains an *unofficial channel* called
+  =nonguix= that provides these non-free packages.
+
+  #+begin_example
+  guix install linux          ;; libre kernel (official)
+
+  guix install linux-lts      ;; non-free kernel (nonguix)
+  #+end_example
+
+  To use it, you add the nonguix channel to your
+  =~/.config/guix/channels.scm= file:
+
+  #+begin_src scheme
+  (cons (channel
+          (name 'nonguix)
+          (url "https://gitlab.com/nonguix/nonguix")
+          (introduction
+            (make-channel-introduction "..."
+              (openpgp-fingerprint "..."))))
+        %default-channels)
+  #+end_src
+
+* Getting Started
+
+  Install Guix on your existing distro:
+
+  #+begin_example
+  cd /tmp
+  wget https://git.savannah.gnu.org/cgit/guix.git/\
+  plain/etc/guix-install.sh
+  chmod +x guix-install.sh
+  sudo ./guix-install.sh
+  #+end_example
+
+  Or download the full Guix System ISO from:
+  https://guix.gnu.org/download/
+
+* Resources
+
+  - Homepage: https://guix.gnu.org
+  - Manual: https://guix.gnu.org/manual/
+  - Cookbook: https://guix.gnu.org/cookbook/
+  - IRC: =#guix= on Libera.Chat
+  - Mailing list: =guix-devel@gnu.org=
+  - Source: https://git.savannah.gnu.org/cgit/guix.git
+
+* Thank You!
+
+  /Questions?/
+
+  #+begin_example
+  guix describe
+  guix --help
+  #+end_example
+
+  Let's explore GNU Guix together.
+
+# Local Variables:
+# org-hide-emphasis-markers: t
+# End:
